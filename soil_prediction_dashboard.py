@@ -4,23 +4,16 @@ import numpy as np
 import joblib
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from imblearn.over_sampling import SMOTE
 from sklearn.model_selection import train_test_split
-import shap
-import os
-import matplotlib.pyplot as plt
-import seaborn as sns
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
+from sklearn.cluster import KMeans
+from scipy.stats import zscore, gaussian_kde
 from io import BytesIO
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler
-from scipy.stats import zscore, gaussian_kde
-import plotly.figure_factory as ff
-try:
-    import kaleido
-except ImportError:
-    kaleido = None
+import os
 
 # Set page configuration
 st.set_page_config(
@@ -266,7 +259,6 @@ def get_model(n_estimators=100):
         model = joblib.load('improved_models/model_random_forest_(smote).pkl')
         scaler = joblib.load('improved_models/scaler.pkl')
         label_encoder = joblib.load('improved_models/label_encoder.pkl')
-        # Check if saved model's features match feature_columns
         if hasattr(scaler, 'feature_names_in_') and list(scaler.feature_names_in_) != feature_columns:
             st.warning(f"Saved model uses {scaler.feature_names_in_}, but expected {feature_columns}. Forcing retraining...")
             raise FileNotFoundError("Feature mismatch")
@@ -303,6 +295,7 @@ def get_model(n_estimators=100):
         joblib.dump(label_encoder, 'improved_models/label_encoder.pkl')
         st.success("Trained and saved new model with features: {}".format(feature_columns))
         return model, scaler, label_encoder
+
 model, scaler, label_encoder = get_model(n_estimators)
 
 # Crop recommendation
@@ -321,7 +314,7 @@ if filtered_df is not None and model is not None:
     # Tabs
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "Data Overview", "Basic EDA", "Advanced EDA", "Interactive Plots", 
-        "Prediction", "Model Explanation", "Feature Importance", "Model Performance"
+        "Prediction", "Advanced Model Insights", "Feature Importance", "Model Performance"
     ])
 
     with tab1:
@@ -350,43 +343,108 @@ if filtered_df is not None and model is not None:
     with tab2:
         st.subheader("🔍 Basic Exploratory Data Analysis")
         st.markdown("<div class='tooltip'>What is this?<span class='tooltiptext'>Simple charts to see soil type patterns.</span></div>", unsafe_allow_html=True)
-        fig_type = px.histogram(
-            filtered_df, x='Soil_Type', title="Distribution of Soil Types",
-            color='Soil_Type', color_discrete_sequence=px.colors.qualitative.D3,
-            template=plotly_template, animation_frame='Soil_Type'
-        )
-        st.plotly_chart(fig_type, use_container_width=True)
-        if len(selected_features) >= 2:
-            fig_scatter = px.scatter(
-                filtered_df, x=selected_features[0], y=selected_features[1], color='Soil_Type',
-                title=f"{selected_features[0]} vs {selected_features[1]}",
-                animation_frame='Soil_pH', color_discrete_sequence=px.colors.qualitative.Vivid,
-                hover_data=['Organic_Carbon', 'EC'], size='Clay_Content',
+        if filtered_df.empty:
+            st.warning("No data available after applying filters. Please adjust sidebar filters (e.g., select more soil types or widen pH range).")
+        else:
+            fig_type = px.histogram(
+                filtered_df, x='Soil_Type', title="Distribution of Soil Types",
+                color='Soil_Type', color_discrete_sequence=px.colors.qualitative.D3,
+                template=plotly_template, animation_frame='Soil_Type'
+            )
+            st.plotly_chart(fig_type, use_container_width=True)
+            if len(selected_features) >= 2:
+                fig_scatter = px.scatter(
+                    filtered_df, x=selected_features[0], y=selected_features[1], color='Soil_Type',
+                    title=f"{selected_features[0]} vs {selected_features[1]}",
+                    animation_frame='Soil_pH', color_discrete_sequence=px.colors.qualitative.Vivid,
+                    hover_data=['Organic_Carbon', 'EC'], size='Clay_Content',
+                    template=plotly_template
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+            fig_box = px.box(
+                filtered_df, x='Soil_Type', y=selected_features[0] if selected_features else 'Soil_pH',
+                title="Box Plot by Soil Type", color='Soil_Type',
+                color_discrete_sequence=px.colors.qualitative.Set1,
                 template=plotly_template
             )
-            st.plotly_chart(fig_scatter, use_container_width=True)
-        fig_box = px.box(
-            filtered_df, x='Soil_Type', y=selected_features[0] if selected_features else 'Soil_pH',
-            title="Box Plot by Soil Type", color='Soil_Type',
-            color_discrete_sequence=px.colors.qualitative.Set1,
-            template=plotly_template
-        )
-        st.plotly_chart(fig_box, use_container_width=True)
-        corr = filtered_df[selected_features].corr() if selected_features else filtered_df.select_dtypes(include=np.number).corr()
-        fig_corr = px.imshow(
-            corr, text_auto=True, aspect="auto", title="Correlation Heatmap",
-            color_continuous_scale='RdYlBu', template=plotly_template
-        )
-        st.plotly_chart(fig_corr, use_container_width=True)
-        if kaleido:
-            buf = BytesIO()
+            st.plotly_chart(fig_box, use_container_width=True)
+            corr = filtered_df[selected_features].corr() if selected_features else filtered_df.select_dtypes(include=np.number).corr()
+            fig_corr = px.imshow(
+                corr, text_auto=True, aspect="auto", title="Correlation Heatmap",
+                color_continuous_scale='RdYlBu', template=plotly_template
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
             try:
-                fig_corr.write_image(buf, format="png")
-                st.download_button("Download Correlation Heatmap", buf.getvalue(), "correlation_heatmap.png", "image/png")
+                import kaleido
+                import sys
+                st.write(f"Kaleido detected (version: {kaleido.__version__}, Python: {sys.executable})")
+                buf = BytesIO()
+                fig_corr.write_image(buf, format="png", engine="kaleido")
+                st.download_button(
+                    label="Download Correlation Heatmap (PNG) 📥",
+                    data=buf.getvalue(),
+                    file_name="correlation_heatmap.png",
+                    mime="image/png",
+                    help="Download the correlation heatmap as a PNG image."
+                )
+                # Fallback SVG export
+                buf_svg = BytesIO()
+                fig_corr.write_image(buf_svg, format="svg", engine="kaleido")
+                st.download_button(
+                    label="Download Correlation Heatmap (SVG) 📥",
+                    data=buf_svg.getvalue(),
+                    file_name="correlation_heatmap.svg",
+                    mime="image/svg+xml",
+                    help="Download the correlation heatmap as an SVG image (fallback)."
+                )
+            except ImportError:
+                st.error("Cannot export heatmap: kaleido package is missing. Install it to enable image export.")
+                st.code("pip install -U kaleido")
+                st.write("Troubleshooting steps:")
+                st.markdown("""
+                1. Verify Python version (should be 3.11):
+                   ```bash
+                   python --version
+                   ```
+                2. Activate your virtual environment (if used):
+                   ```bash
+                   .\venv\Scripts\activate
+                   ```
+                3. Install kaleido:
+                   ```bash
+                   pip install -U kaleido
+                   ```
+                4. Verify installation:
+                   ```bash
+                   pip show kaleido
+                   ```
+                5. If issues persist, try user-level installation:
+                   ```bash
+                   python3.11 -m pip install -U kaleido --user
+                   ```
+                6. Test kaleido with this script:
+                   ```python
+                   import plotly.express as px
+                   from io import BytesIO
+                   try:
+                       import kaleido
+                       print("Kaleido installed successfully!")
+                       fig = px.imshow([[1, 2], [3, 4]])
+                       buf = BytesIO()
+                       fig.write_image(buf, format="png")
+                       print("Image export successful!")
+                   except Exception as e:
+                       print(f"Error: {e}")
+                   ```
+                7. If still failing, share the output of `pip show kaleido` and the test script.
+                """)
             except Exception as e:
-                st.warning(f"Cannot export heatmap: {str(e)}")
-        else:
-            st.warning("Install kaleido for image export: `pip install -U kaleido`")
+                st.error(f"Cannot export heatmap: {str(e)}")
+                st.write("Ensure kaleido is installed and compatible with Python 3.11:")
+                st.code("pip install -U kaleido")
+                st.write("Check Python executable:")
+                st.code(f"python -c 'import sys; print(sys.executable)'")
+                st.write("If issues persist, run the test script above and share the output.")
 
     with tab3:
         st.subheader("🎨 Advanced EDA Visualizations")
@@ -403,13 +461,13 @@ if filtered_df is not None and model is not None:
                     template=plotly_template
                 )
                 st.plotly_chart(fig_pair, use_container_width=True)
-                if kaleido:
+                try:
+                    import kaleido
                     buf = BytesIO()
-                    try:
-                        fig_pair.write_image(buf, format="png")
-                        st.download_button("Download Pair Plot", buf.getvalue(), "pair_plot.png", "image/png")
-                    except Exception:
-                        st.warning("Cannot export pair plot.")
+                    fig_pair.write_image(buf, format="png", engine="kaleido")
+                    st.download_button("Download Pair Plot", buf.getvalue(), "pair_plot.png", "image/png")
+                except Exception:
+                    st.warning("Cannot export pair plot: Install kaleido with `pip install -U kaleido`.")
             else:
                 st.warning("Select at least 2 features for pair plot.")
             
@@ -596,50 +654,54 @@ if filtered_df is not None and model is not None:
             )])
             fig_sankey.update_layout(title=f"Sankey Diagram: {sankey_feature} Flow", template=plotly_template)
             st.plotly_chart(fig_sankey, use_container_width=True)
+
     with tab4:
         st.subheader("🖱️ Interactive Plots")
         st.markdown("<div class='tooltip'>What is this?<span class='tooltiptext'>Colorful charts like sunburst to explore soil hierarchies. Example: Loamy with 40.7% clay, pH 5.66 is acidic.</span></div>", unsafe_allow_html=True)
-        line_feature = st.selectbox("Select Feature for Line Plot", all_features)
-        fig_line = px.line(
-            filtered_df.sort_values(by=line_feature),
-            x=line_feature, y=selected_features[1] if len(selected_features) > 1 else 'Organic_Carbon',
-            color='Soil_Type', title=f"Line Plot: {line_feature}",
-            color_discrete_sequence=px.colors.qualitative.Prism,
-            template=plotly_template
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
-        
-        area_y_feature = st.selectbox("Select Feature for Area Plot", selected_features or all_features)
-        fig_area = px.area(
-            filtered_df, x='Soil_pH', y=area_y_feature, color='Soil_Type',
-            title=f"Area Plot: Soil pH vs {area_y_feature}",
-            color_discrete_sequence=px.colors.qualitative.Alphabet,
-            template=plotly_template
-        )
-        st.plotly_chart(fig_area, use_container_width=True)
-        
-        sunburst_value = st.selectbox("Select Value for Sunburst Plot", ['Sand_Content', 'Silt_Content', 'Organic_Carbon'])
-        fig_sunburst = px.sunburst(
-            filtered_df, path=['Soil_Type', 'Clay_Content'], values=sunburst_value,
-            title="Sunburst Plot: Soil Type Hierarchy", color='Soil_pH',
-            color_continuous_scale='Rainbow', template=plotly_template
-        )
-        st.plotly_chart(fig_sunburst, use_container_width=True)
-        if kaleido:
-            buf = BytesIO()
+        if filtered_df.empty:
+            st.warning("No data available after applying filters. Please adjust sidebar filters (e.g., select more soil types or widen pH range).")
+        else:
+            line_feature = st.selectbox("Select Feature for Line Plot", all_features)
+            fig_line = px.line(
+                filtered_df.sort_values(by=line_feature),
+                x=line_feature, y=selected_features[1] if len(selected_features) > 1 else 'Organic_Carbon',
+                color='Soil_Type', title=f"Line Plot: {line_feature}",
+                color_discrete_sequence=px.colors.qualitative.Prism,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+            area_y_feature = st.selectbox("Select Feature for Area Plot", selected_features or all_features)
+            fig_area = px.area(
+                filtered_df, x='Soil_pH', y=area_y_feature, color='Soil_Type',
+                title=f"Area Plot: Soil pH vs {area_y_feature}",
+                color_discrete_sequence=px.colors.qualitative.Alphabet,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_area, use_container_width=True)
+            
+            sunburst_value = st.selectbox("Select Value for Sunburst Plot", ['Sand_Content', 'Silt_Content', 'Organic_Carbon'])
+            fig_sunburst = px.sunburst(
+                filtered_df, path=['Soil_Type', 'Clay_Content'], values=sunburst_value,
+                title="Sunburst Plot: Soil Type Hierarchy", color='Soil_pH',
+                color_continuous_scale='Rainbow', template=plotly_template
+            )
+            st.plotly_chart(fig_sunburst, use_container_width=True)
             try:
-                fig_sunburst.write_image(buf, format="png")
+                import kaleido
+                buf = BytesIO()
+                fig_sunburst.write_image(buf, format="png", engine="kaleido")
                 st.download_button("Download Sunburst Plot", buf.getvalue(), "sunburst_plot.png", "image/png")
             except Exception:
-                st.warning("Cannot export sunburst plot.")
-        
-        treemap_value = st.selectbox("Select Value for Treemap", ['Sand_Content', 'Silt_Content', 'Organic_Carbon'])
-        fig_treemap = px.treemap(
-            filtered_df, path=['Soil_Type', 'Clay_Content'], values=treemap_value,
-            title="Treemap: Soil Type Hierarchy", color='Soil_pH',
-            color_continuous_scale='Plasma', template=plotly_template
-        )
-        st.plotly_chart(fig_treemap, use_container_width=True)
+                st.warning("Cannot export sunburst plot: Install kaleido with `pip install -U kaleido`.")
+            
+            treemap_value = st.selectbox("Select Value for Treemap", ['Sand_Content', 'Silt_Content', 'Organic_Carbon'])
+            fig_treemap = px.treemap(
+                filtered_df, path=['Soil_Type', 'Clay_Content'], values=treemap_value,
+                title="Treemap: Soil Type Hierarchy", color='Soil_pH',
+                color_continuous_scale='Plasma', template=plotly_template
+            )
+            st.plotly_chart(fig_treemap, use_container_width=True)
 
     with tab5:
         st.subheader("⚙️ Predict Soil Type")
@@ -720,72 +782,236 @@ if filtered_df is not None and model is not None:
             st.write("Check if input features match the model's requirements.")
 
     with tab6:
-        st.subheader("📈 Model Explanation (SHAP)")
-        if st.button("Generate SHAP Explanation"):
-            st.write("Generating SHAP values...")
-            shap_df = filtered_df.copy()
-            shap_df['Clay_Sand_Ratio'] = shap_df['Clay_Content'] / (shap_df['Sand_Content'] + 1e-6)
-            shap_df['Texture_Sum'] = shap_df['Clay_Content'] + shap_df['Sand_Content'] + shap_df['Silt_Content']
-            shap_df['pH_EC_Interaction'] = shap_df['Soil_pH'] * shap_df['EC']
-            shap_df['Organic_Texture_Ratio'] = shap_df['Organic_Carbon'] / (shap_df['Texture_Sum'] + 1e-6)
-            X_scaled = scaler.transform(shap_df[feature_columns])
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_scaled)
-            st.write("SHAP Summary Plot")
-            fig_shap_summary = plt.figure(figsize=(10, 6))
-            shap.summary_plot(shap_values, shap_df[feature_columns], show=False)
-            st.pyplot(fig_shap_summary)
-            st.write("SHAP Force Plot")
-            try:
-                # Predict class for the first sample
-                first_sample = X_scaled[0:1]
-                predicted_class = model.predict(first_sample)[0]
-                # Verify feature alignment
-                if len(shap_values[predicted_class][0]) != len(feature_columns):
-                    st.error(f"Dimension mismatch: SHAP values have {len(shap_values[predicted_class][0])} features, but feature_columns has {len(feature_columns)} features: {feature_columns}")
-                    st.write("Forcing model retraining with correct features...")
-                    # Delete old model to force retraining
-                    model_path = 'improved_models/model_random_forest_(smote).pkl'
-                    scaler_path = 'improved_models/scaler.pkl'
-                    if os.path.exists(model_path):
-                        os.remove(model_path)
-                    if os.path.exists(scaler_path):
-                        os.remove(scaler_path)
-                    model, scaler, label_encoder = get_model(n_estimators)
-                    X_scaled = scaler.transform(shap_df[feature_columns])
-                    explainer = shap.TreeExplainer(model)
-                    shap_values = explainer.shap_values(X_scaled)
-                # Use SHAP values and expected value for the predicted class
-                shap_values_for_class = shap_values[predicted_class]
-                expected_value = explainer.expected_value[predicted_class]
-                fig_shap_force = plt.figure(figsize=(10, 4))
-                shap.initjs()
-                shap.force_plot(
-                    expected_value,
-                    shap_values_for_class[0],
-                    shap_df[feature_columns].iloc[0],
-                    matplotlib=True,
-                    feature_names=feature_columns
-                )
-                st.pyplot(fig_shap_force)
-                st.write(f"Force plot shows explanation for predicted class: {label_encoder.inverse_transform([predicted_class])[0]}")
-            except Exception as e:
-                st.error(f"Error generating SHAP force plot: {str(e)}")
-                st.write(f"Debug info: SHAP values shape: {shap_values[predicted_class][0].shape}, Features: {len(feature_columns)} ({feature_columns})")
-                st.write("Try deleting 'improved_models/' folder and rerunning to retrain the model.")
+        st.subheader("🌟 Advanced Model Insights")
+        st.markdown("<div class='tooltip'>What is this?<span class='tooltiptext'>Explore soil clusters, feature contributions, crop suitability, soil health, what-if scenarios, fertility trends, anomalies, and yield potential for Amhara farming!</span></div>", unsafe_allow_html=True)
+        if filtered_df.empty:
+            st.warning("No data available after applying filters. Please adjust sidebar filters (e.g., select more soil types or widen pH range).")
+        else:
+            # Feature Contribution Analysis
+            st.write("Feature Contribution Analysis")
+            st.markdown("See how each feature (e.g., Clay Content) influences predictions for a sample.")
+            sample_idx = st.slider("Select Sample Index", 0, len(filtered_df)-1, 0)
+            sample_df = filtered_df.iloc[[sample_idx]].copy()
+            sample_df['Clay_Sand_Ratio'] = sample_df['Clay_Content'] / (sample_df['Sand_Content'] + 1e-6)
+            sample_df['Texture_Sum'] = sample_df['Clay_Content'] + sample_df['Sand_Content'] + sample_df['Silt_Content']
+            sample_df['pH_EC_Interaction'] = sample_df['Soil_pH'] * sample_df['EC']
+            sample_df['Organic_Texture_Ratio'] = sample_df['Organic_Carbon'] / (sample_df['Texture_Sum'] + 1e-6)
+            X_sample = sample_df[feature_columns]
+            X_sample_scaled = scaler.transform(X_sample)
+            prediction = label_encoder.inverse_transform(model.predict(X_sample_scaled))[0]
+            feature_importance = pd.DataFrame({
+                'Feature': feature_columns,
+                'Importance': model.feature_importances_ * (X_sample.values[0] / (X_sample.values[0].max() + 1e-6))
+            }).sort_values('Importance', ascending=False)
+            fig_contrib = px.bar(
+                feature_importance, x='Importance', y='Feature', orientation='h',
+                title=f"Feature Contributions for Sample {sample_idx} (Predicted: {prediction})",
+                color='Importance', color_continuous_scale='Viridis',
+                template=plotly_template
+            )
+            st.plotly_chart(fig_contrib, use_container_width=True)
+            
+            # Cluster Analysis
+            st.write("Soil Cluster Analysis")
+            st.markdown("Groups similar soils to identify patterns (e.g., high-clay Loamy soils).")
+            n_clusters = st.slider("Number of Clusters", 2, 5, 3)
+            cluster_df = filtered_df.copy()
+            cluster_df['Clay_Sand_Ratio'] = cluster_df['Clay_Content'] / (cluster_df['Sand_Content'] + 1e-6)
+            cluster_df['Texture_Sum'] = cluster_df['Clay_Content'] + cluster_df['Sand_Content'] + cluster_df['Silt_Content']
+            cluster_df['pH_EC_Interaction'] = cluster_df['Soil_pH'] * cluster_df['EC']
+            cluster_df['Organic_Texture_Ratio'] = cluster_df['Organic_Carbon'] / (cluster_df['Texture_Sum'] + 1e-6)
+            X_cluster = scaler.transform(cluster_df[feature_columns])
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+            cluster_df['Cluster'] = kmeans.fit_predict(X_cluster)
+            fig_cluster = px.scatter(
+                cluster_df, x='Soil_pH', y='Clay_Content', color='Cluster', symbol='Soil_Type',
+                title=f"Soil Clusters (n={n_clusters})",
+                color_continuous_scale=px.colors.sequential.Rainbow,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_cluster, use_container_width=True)
+            st.write("Cluster Summary:")
+            cluster_summary = cluster_df.groupby('Cluster').agg({
+                'Soil_Type': lambda x: x.mode()[0],
+                'Soil_pH': 'mean',
+                'Clay_Content': 'mean',
+                'Organic_Carbon': 'mean'
+            }).reset_index().round(2)
+            st.dataframe(cluster_summary, use_container_width=True)
+            csv = cluster_summary.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Cluster Summary 📥",
+                data=csv,
+                file_name="cluster_summary.csv",
+                mime="text/csv"
+            )
+            
+            # Crop Suitability Score
+            st.write("Crop Suitability Score")
+            st.markdown("Scores soil samples for crop suitability (e.g., teff for Loamy, pH 6–7).")
+            suitability_df = filtered_df.copy()
+            suitability_df['Clay_Sand_Ratio'] = suitability_df['Clay_Content'] / (suitability_df['Sand_Content'] + 1e-6)
+            suitability_df['Texture_Sum'] = suitability_df['Clay_Content'] + suitability_df['Sand_Content'] + suitability_df['Silt_Content']
+            suitability_df['pH_EC_Interaction'] = suitability_df['Soil_pH'] * suitability_df['EC']
+            suitability_df['Organic_Texture_Ratio'] = suitability_df['Organic_Carbon'] / (suitability_df['Texture_Sum'] + 1e-6)
+            X_suitability = scaler.transform(suitability_df[feature_columns])
+            suitability_df['Prediction'] = label_encoder.inverse_transform(model.predict(X_suitability))
+            suitability_df['Suitability_Score'] = 0.0
+            for idx, row in suitability_df.iterrows():
+                crops, _, status = recommend_crops(row['Prediction'], row['Soil_pH'])
+                score = (0.6 if 'Teff' in crops else 0.3) + (0.2 if status.startswith('✅') else 0.0) + (0.2 if row['Organic_Carbon'] > 1.5 else 0.0)
+                suitability_df.at[idx, 'Suitability_Score'] = score
+            fig_suitability = px.histogram(
+                suitability_df, x='Suitability_Score', color='Prediction',
+                title="Crop Suitability Score Distribution",
+                color_discrete_sequence=px.colors.qualitative.Vivid,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_suitability, use_container_width=True)
+            st.write("Top 5 Samples by Suitability:")
+            st.dataframe(suitability_df[['Soil_pH', 'Clay_Content', 'Organic_Carbon', 'Prediction', 'Suitability_Score']].nlargest(5, 'Suitability_Score'), use_container_width=True)
+            csv = suitability_df[['Soil_pH', 'Clay_Content', 'Organic_Carbon', 'Prediction', 'Suitability_Score']].to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Suitability Scores 📥",
+                data=csv,
+                file_name="suitability_scores.csv",
+                mime="text/csv"
+            )
+            
+            # Soil Health Index
+            st.write("Soil Health Index")
+            st.markdown("A score (0–100) assessing soil quality based on pH, Organic Carbon, and texture.")
+            health_df = filtered_df.copy()
+            if not health_df.empty:
+                try:
+                    organic_scaled = MinMaxScaler().fit_transform(health_df[['Organic_Carbon']]).ravel() * 40
+                    ph_scaled = (1 - abs(health_df['Soil_pH'] - 6.5) / 2.5).to_numpy() * 30
+                    clay_scaled = MinMaxScaler().fit_transform(health_df[['Clay_Content']]).ravel() * 30
+                    health_df['Soil_Health'] = (organic_scaled + ph_scaled + clay_scaled) * 100
+                    fig_health = px.box(
+                        health_df, x='Soil_Type', y='Soil_Health', color='Soil_Type',
+                        title="Soil Health Index by Soil Type",
+                        color_discrete_sequence=px.colors.qualitative.Set1,
+                        template=plotly_template
+                    )
+                    st.plotly_chart(fig_health, use_container_width=True)
+                except ValueError as e:
+                    st.warning(f"Cannot compute Soil Health Index: {str(e)}. Try adjusting filters to include more data.")
+            else:
+                st.warning("No data available for Soil Health Index. Adjust sidebar filters.")
+            
+            # Soil Fertility Trend Analysis
+            st.write("Soil Fertility Trend Analysis")
+            st.markdown("Visualize trends in soil fertility (Organic Carbon, pH) over samples.")
+            trend_df = filtered_df.copy()
+            trend_df['Sample_Index'] = range(len(trend_df))
+            trend_feature = st.selectbox("Select Feature for Trend Analysis", ['Organic_Carbon', 'Soil_pH'])
+            fig_trend = px.line(
+                trend_df, x='Sample_Index', y=trend_feature, color='Soil_Type',
+                title=f"{trend_feature} Trend Across Samples",
+                color_discrete_sequence=px.colors.qualitative.D3,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+            
+            # Anomaly Detection
+            st.write("Soil Anomaly Detection")
+            st.markdown("Identify unusual soil samples (e.g., extreme pH or clay content).")
+            anomaly_df = filtered_df.copy()
+            anomaly_df['Clay_Sand_Ratio'] = anomaly_df['Clay_Content'] / (anomaly_df['Sand_Content'] + 1e-6)
+            anomaly_df['Texture_Sum'] = anomaly_df['Clay_Content'] + anomaly_df['Sand_Content'] + anomaly_df['Silt_Content']
+            anomaly_df['pH_EC_Interaction'] = anomaly_df['Soil_pH'] * anomaly_df['EC']
+            anomaly_df['Organic_Texture_Ratio'] = anomaly_df['Organic_Carbon'] / (anomaly_df['Texture_Sum'] + 1e-6)
+            X_anomaly = scaler.transform(anomaly_df[feature_columns])
+            iso_forest = IsolationForest(contamination=0.1, random_state=42)
+            anomaly_df['Anomaly'] = iso_forest.fit_predict(X_anomaly)
+            anomaly_df['Anomaly'] = anomaly_df['Anomaly'].map({1: 'Normal', -1: 'Anomaly'})
+            fig_anomaly = px.scatter(
+                anomaly_df, x='Soil_pH', y='Clay_Content', color='Anomaly', symbol='Soil_Type',
+                title="Anomaly Detection in Soil Samples",
+                color_discrete_map={'Normal': 'blue', 'Anomaly': 'red'},
+                template=plotly_template
+            )
+            st.plotly_chart(fig_anomaly, use_container_width=True)
+            st.write("Anomalous Samples:")
+            st.dataframe(anomaly_df[anomaly_df['Anomaly'] == 'Anomaly'][['Soil_pH', 'Clay_Content', 'Organic_Carbon', 'Soil_Type']], use_container_width=True)
+            
+            # Crop Yield Potential
+            st.write("Crop Yield Potential")
+            st.markdown("Estimate yield potential for crops like teff based on soil properties.")
+            yield_df = filtered_df.copy()
+            yield_df['Clay_Sand_Ratio'] = yield_df['Clay_Content'] / (yield_df['Sand_Content'] + 1e-6)
+            yield_df['Texture_Sum'] = yield_df['Clay_Content'] + yield_df['Sand_Content'] + yield_df['Silt_Content']
+            yield_df['pH_EC_Interaction'] = yield_df['Soil_pH'] * yield_df['EC']
+            yield_df['Organic_Texture_Ratio'] = yield_df['Organic_Carbon'] / (yield_df['Texture_Sum'] + 1e-6)
+            X_yield = scaler.transform(yield_df[feature_columns])
+            yield_df['Prediction'] = label_encoder.inverse_transform(model.predict(X_yield))
+            crops = ['Teff', 'Wheat', 'Maize']
+            yield_scores = {}
+            for crop in crops:
+                yield_scores[crop] = []
+                for idx, row in yield_df.iterrows():
+                    score = (0.5 if crop in recommend_crops(row['Prediction'], row['Soil_pH'])[0] else 0.2) + \
+                            (0.3 if 6.0 <= row['Soil_pH'] <= 7.5 else 0.0) + \
+                            (0.2 if row['Organic_Carbon'] > 1.5 else 0.0)
+                    yield_scores[crop].append(score)
+            yield_df = pd.DataFrame(yield_scores)
+            yield_df['Soil_Type'] = filtered_df['Soil_Type']
+            yield_avg = yield_df.groupby('Soil_Type').mean().reset_index()
+            fig_yield = px.line_polar(
+                yield_avg.melt(id_vars='Soil_Type', value_vars=crops, var_name='Crop', value_name='Yield_Potential'),
+                r='Yield_Potential', theta='Crop', color='Soil_Type',
+                line_close=True, title="Crop Yield Potential by Soil Type",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                template=plotly_template
+            )
+            st.plotly_chart(fig_yield, use_container_width=True)
+            
+            # What-If Analysis
+            st.write("What-If Analysis")
+            st.markdown("Adjust soil features to see how predictions change (e.g., increase pH for teff).")
+            with st.form("what_if_form"):
+                what_if_ph = st.slider("What-If Soil pH", 4.0, 9.0, 6.0)
+                what_if_organic = st.slider("What-If Organic Carbon (%)", 0.0, 10.0, 1.0)
+                what_if_clay = st.slider("What-If Clay Content (%)", 0.0, 100.0, 30.0)
+                what_if_sand = st.slider("What-If Sand Content (%)", 0.0, 100.0, 40.0)
+                what_if_silt = st.slider("What-If Silt Content (%)", 0.0, 100.0, 30.0)
+                what_if_ec = st.slider("What-If EC (dS/m)", 0.0, 5.0, 1.0)
+                submitted = st.form_submit_button("Predict with New Values")
+                if submitted:
+                    what_if_df = pd.DataFrame({
+                        'Soil_pH': [what_if_ph], 'Organic_Carbon': [what_if_organic], 'Clay_Content': [what_if_clay],
+                        'Sand_Content': [what_if_sand], 'Silt_Content': [what_if_silt], 'EC': [what_if_ec]
+                    })
+                    what_if_df['Clay_Sand_Ratio'] = what_if_df['Clay_Content'] / (what_if_df['Sand_Content'] + 1e-6)
+                    what_if_df['Texture_Sum'] = what_if_df['Clay_Content'] + what_if_df['Sand_Content'] + what_if_df['Silt_Content']
+                    what_if_df['pH_EC_Interaction'] = what_if_df['Soil_pH'] * what_if_df['EC']
+                    what_if_df['Organic_Texture_Ratio'] = what_if_df['Organic_Carbon'] / (what_if_df['Texture_Sum'] + 1e-6)
+                    X_what_if = what_if_df[feature_columns]
+                    X_what_if_scaled = scaler.transform(X_what_if)
+                    what_if_pred = label_encoder.inverse_transform(model.predict(X_what_if_scaled))[0]
+                    st.metric("What-If Predicted Soil Type", what_if_pred, delta="🌱 What-If Result")
+                    crops, advice, status = recommend_crops(what_if_pred, what_if_ph)
+                    st.write(f"**Crop Recommendations**: {', '.join(crops)}")
+                    st.write(f"**Advice**: {advice}")
+                    st.write(f"**pH Status**: {status}")
+
     with tab7:
         st.subheader("🌟 Feature Importance")
-        importance_df = pd.DataFrame({
-            'Feature': feature_columns,
-            'Importance': model.feature_importances_
-        }).sort_values('Importance', ascending=False)
-        fig_importance = px.bar(
-            importance_df, x='Importance', y='Feature', orientation='h',
-            title="Feature Importance", color='Importance',
-            color_continuous_scale='Viridis', template=plotly_template
-        )
-        st.plotly_chart(fig_importance, use_container_width=True)
-        st.dataframe(importance_df, use_container_width=True)
+        if filtered_df.empty:
+            st.warning("No data available after applying filters. Please adjust sidebar filters (e.g., select more soil types or widen pH range).")
+        else:
+            importance_df = pd.DataFrame({
+                'Feature': feature_columns,
+                'Importance': model.feature_importances_
+            }).sort_values('Importance', ascending=False)
+            fig_importance = px.bar(
+                importance_df, x='Importance', y='Feature', orientation='h',
+                title="Feature Importance", color='Importance',
+                color_continuous_scale='Viridis', template=plotly_template
+            )
+            st.plotly_chart(fig_importance, use_container_width=True)
+            st.dataframe(importance_df, use_container_width=True)
 
     with tab8:
         st.subheader("📊 Model Performance")
@@ -802,11 +1028,8 @@ if filtered_df is not None and model is not None:
             X = data[feature_columns]
             X_scaled = scaler.transform(X)
             y_pred = model.predict(X_scaled)
-            from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
-            # Accuracy
             accuracy = accuracy_score(y, y_pred)
             st.metric("Model Accuracy", f"{accuracy:.2%}", delta="🌟 Overall Performance")
-            # Confusion Matrix
             cm = confusion_matrix(y, y_pred)
             fig_cm = px.imshow(
                 cm, x=label_encoder.classes_, y=label_encoder.classes_,
@@ -819,7 +1042,6 @@ if filtered_df is not None and model is not None:
                 font=dict(size=14)
             )
             st.plotly_chart(fig_cm, use_container_width=True)
-            # Classification Report
             st.write("Classification Report")
             clf_report = classification_report(y, y_pred, target_names=label_encoder.classes_, output_dict=True)
             clf_df = pd.DataFrame(clf_report).transpose().round(3)
@@ -832,7 +1054,6 @@ if filtered_df is not None and model is not None:
                 mime="text/csv",
                 help="Download precision, recall, and F1-score details."
             )
-            # ROC Curves and AUC
             st.write("ROC Curves and AUC Scores")
             y_proba = model.predict_proba(X_scaled)
             fig_roc = go.Figure()
@@ -855,7 +1076,6 @@ if filtered_df is not None and model is not None:
                 font=dict(size=14)
             )
             st.plotly_chart(fig_roc, use_container_width=True)
-            # Precision-Recall Curves
             st.write("Precision-Recall Curves")
             fig_pr = go.Figure()
             for i, class_name in enumerate(label_encoder.classes_):
@@ -875,21 +1095,22 @@ if filtered_df is not None and model is not None:
             )
             st.plotly_chart(fig_pr, use_container_width=True)
 
-    # Expanded Tutorial with more details
+    # Expanded Tutorial
     with st.expander("📚 Expanded Tutorial for Beginners", expanded=True):
         st.markdown("""
         **Welcome to the #1 Vibrant Soil Dashboard!** This tool is designed for beginners like you. Here's how to use it:
         - **Data Overview**: View soil data. Hover over columns for details.
-        - **Basic EDA**: Simple charts (histograms, scatter). Choose a theme in the sidebar to see changes.
-        - **Advanced EDA**: 16 stunning charts (e.g., sunburst for soil hierarchies, word cloud for soil types). Select 2+ features to see plots.
-        - **Interactive Plots**: Fun charts like sunburst. Example: Loamy with 40.7% clay, pH 5.66 is slightly acidic (red color).
-        - **Prediction**: Enter values to predict soil type. Get crop suggestions (e.g., teff for Loamy, adjust pH if acidic).
-        - **Model Explanation**: SHAP plots to understand why the model predicts a soil type.
+        - **Basic EDA**: Simple charts (histograms, scatter). Download the correlation heatmap as PNG or SVG.
+        - **Advanced EDA**: 16 stunning charts (e.g., sunburst, PCA). Select 2+ features to see plots.
+        - **Interactive Plots**: Fun charts like sunburst. Example: Loamy with 40.7% clay, pH 5.66 is slightly acidic.
+        - **Prediction**: Enter values to predict soil type. Get crop suggestions (e.g., teff for Loamy).
+        - **Advanced Model Insights**: Explore soil clusters, feature contributions, crop suitability, soil health, what-if scenarios, fertility trends, anomalies, and yield potential.
         - **Feature Importance**: See which features (e.g., clay content) matter most.
-        - **Model Performance**: Check accuracy (how often the model is right).
+        - **Model Performance**: Check accuracy, confusion matrix, classification report, and ROC/PR curves.
         
-        **Tips for Amhara Farmers**: Use pH filter to find soils for teff (pH 6.0–7.0). Upload your soil data CSV for personalized predictions!
-        **Theme Changes**: If themes don't change, clear your browser cache (Ctrl+Shift+Delete in Chrome) or try incognito mode.
+        **Tips for Amhara Farmers**: Use pH filter (6.0–7.0 for teff). Upload your soil data CSV for predictions!
+        **Theme Changes**: If themes don't change, clear browser cache (Ctrl+Shift+Delete) or try incognito mode.
+        **Export Issues**: If heatmap export fails, install kaleido (`pip install -U kaleido`) and verify Python 3.11.
         """)
 
     # Footer
