@@ -17,7 +17,7 @@ import os
 
 # Set page configuration
 st.set_page_config(
-    page_title="🌍 #1 Vibrant Soil Prediction Dashboard 🌱",
+    page_title="🌍 Vibrant Soil Prediction Dashboard 🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -112,7 +112,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Title and description
-st.title("🌱 #1 Vibrant Soil Prediction Dashboard 🌍")
+st.title("🌱 Soil Prediction Dashboard 🌍")
 st.markdown("""
 Welcome to the **most vibrant and powerful** soil analysis tool! Explore soil types (Sandy, Loamy, Clayey) with stunning charts, predict soil types, and get crop recommendations for Amhara farming! 🚜
 <div class='tooltip'>What is this dashboard?<span class='tooltiptext'>This tool analyzes soil properties (e.g., sand, clay, pH) to predict soil types and suggest crops like teff. Perfect for beginners and farmers!</span></div>
@@ -341,111 +341,254 @@ if filtered_df is not None and model is not None:
         )
 
     with tab2:
-        st.subheader("🔍 Basic Exploratory Data Analysis")
-        st.markdown("<div class='tooltip'>What is this?<span class='tooltiptext'>Simple charts to see soil type patterns.</span></div>", unsafe_allow_html=True)
+        st.subheader("🔍 Basic Exploratory Data Analysis 🌾")
+        st.markdown("""
+        <div class='tooltip'>What's this?
+            <span class='tooltiptext'>Interactive charts to explore soil patterns (pH, sand, clay). Includes teff suitability analysis </span>
+        </div>
+        """, unsafe_allow_html=True)
+        
         if filtered_df.empty:
-            st.warning("No data available after applying filters. Please adjust sidebar filters (e.g., select more soil types or widen pH range).")
+            st.warning("No data available after applying filters. Adjust sidebar filters (e.g., select more soil types or widen pH range).")
+            st.markdown("**Tip**: Use the 'Teff Settings' button in the sidebar to load optimal filters for teff farming (pH 6.0–7.0, Loamy soil).")
         else:
-            fig_type = px.histogram(
-                filtered_df, x='Soil_Type', title="Distribution of Soil Types",
-                color='Soil_Type', color_discrete_sequence=px.colors.qualitative.D3,
-                template=plotly_template, animation_frame='Soil_Type'
+            # Data Summary
+            st.markdown("### 📊 Data Summary")
+            st.data_editor(
+                filtered_df.describe().transpose(),
+                use_container_width=True,
+                column_config={
+                    "count": st.column_config.NumberColumn("Count", format="%.0f"),
+                    "mean": st.column_config.NumberColumn("Mean", format="%.2f"),
+                    "std": st.column_config.NumberColumn("Std Dev", format="%.2f"),
+                    "min": st.column_config.NumberColumn("Min", format="%.2f"),
+                    "max": st.column_config.NumberColumn("Max", format="%.2f")
+                }
             )
-            st.plotly_chart(fig_type, use_container_width=True)
+            
+            # Interactive Data Table
+            st.markdown("### 🗂️ Interactive Data Table")
+            st.data_editor(
+                filtered_df,
+                use_container_width=True,
+                column_config={
+                    "Soil_pH": st.column_config.NumberColumn("Soil pH", min_value=4, max_value=9, format="%.2f"),
+                    "Organic_Carbon": st.column_config.NumberColumn("Organic Carbon (%)", min_value=0, max_value=10, format="%.2f"),
+                    "Clay_Content": st.column_config.NumberColumn("Clay Content (%)", min_value=0, max_value=100, format="%.2f"),
+                    "Sand_Content": st.column_config.NumberColumn("Sand Content (%)", min_value=0, max_value=100, format="%.2f"),
+                    "Silt_Content": st.column_config.NumberColumn("Silt Content (%)", min_value=0, max_value=100, format="%.2f"),
+                    "EC": st.column_config.NumberColumn("EC (dS/m)", min_value=0, max_value=5, format="%.2f"),
+                    "Soil_Type": st.column_config.TextColumn("Soil Type") if 'Soil_Type' in filtered_df.columns else None
+                },
+                hide_index=True
+            )
+            csv = filtered_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Filtered Data (CSV) 📥",
+                data=csv,
+                file_name="filtered_soil_data.csv",
+                mime="text/csv",
+                help="Download the filtered soil data as a CSV file."
+            )
+            
+            # Soil Type Distribution
+            if 'Soil_Type' in filtered_df.columns:
+                st.markdown("### 📈 Soil Type Distribution")
+                # Preprocess to get counts for hover data
+                soil_counts = filtered_df['Soil_Type'].value_counts().reset_index()
+                soil_counts.columns = ['Soil_Type', 'Count']
+                fig_type = px.histogram(
+                    filtered_df, x='Soil_Type', title="Distribution of Soil Types",
+                    color='Soil_Type', color_discrete_sequence=px.colors.qualitative.Bold,
+                    template=plotly_template, text_auto=True, height=400,
+                    opacity=0.85,  # Slight transparency for clarity
+                )
+                fig_type.update_layout(
+                    title_font_size=20, title_font_color="#ff4500",
+                    xaxis_title="Soil Type", yaxis_title="Count",
+                    barmode='group',  # Side-by-side bars
+                    showlegend=True,  # Show legend for soil types
+                    bargap=0.2,  # Gap between bars
+                    plot_bgcolor='rgba(255, 245, 238, 0.8)',  # Light peach background
+                    font=dict(size=12),
+                )
+                fig_type.update_traces(
+                    textfont_size=14, textangle=0, textposition="auto",
+                    marker=dict(line=dict(color="#000000", width=1)),  # Black outline for bars
+                    hovertemplate="<b>%{x}</b><br>Count: %{y}<extra></extra>",  # Custom hover
+                )
+                st.plotly_chart(fig_type, use_container_width=True)
+                # Display counts table for reference
+                st.markdown("**Soil Type Counts**")
+                st.dataframe(soil_counts, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Soil_Type column is missing. Please upload a CSV with a 'Soil_Type' column or use the 'Generate Sample CSV' button in the sidebar.")            
+            # Scatter Plot with Animation
             if len(selected_features) >= 2:
+                st.markdown("### 🌍 Animated Scatter Plot")
                 fig_scatter = px.scatter(
-                    filtered_df, x=selected_features[0], y=selected_features[1], color='Soil_Type',
+                    filtered_df, x=selected_features[0], y=selected_features[1],
+                    color='Soil_Type' if 'Soil_Type' in filtered_df.columns else None,
                     title=f"{selected_features[0]} vs {selected_features[1]}",
-                    animation_frame='Soil_pH', color_discrete_sequence=px.colors.qualitative.Vivid,
-                    hover_data=['Organic_Carbon', 'EC'], size='Clay_Content',
-                    template=plotly_template
+                    animation_frame='Soil_pH', animation_group='Soil_Type' if 'Soil_Type' in filtered_df.columns else None,
+                    color_discrete_sequence=px.colors.qualitative.Vivid,
+                    hover_data=['Organic_Carbon', 'EC', 'Clay_Content', 'Sand_Content'],
+                    size='Clay_Content', size_max=20,
+                    template=plotly_template, height=500
+                )
+                fig_scatter.update_layout(
+                    title_font_size=20, title_font_color="#ff4500",
+                    xaxis_title=selected_features[0], yaxis_title=selected_features[1],
+                    transition_duration=500, plot_bgcolor='rgba(255, 245, 238, 0.8)'
                 )
                 st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            # Box Plot with Custom Styling
+            st.markdown("### 📊 Box Plot by Soil Type")
             fig_box = px.box(
-                filtered_df, x='Soil_Type', y=selected_features[0] if selected_features else 'Soil_pH',
-                title="Box Plot by Soil Type", color='Soil_Type',
+                filtered_df, x='Soil_Type' if 'Soil_Type' in filtered_df.columns else None,
+                y=selected_features[0] if selected_features else 'Soil_pH',
+                title=f"Box Plot: {selected_features[0] if selected_features else 'Soil_pH'} by Soil Type",
+                color='Soil_Type' if 'Soil_Type' in filtered_df.columns else None,
                 color_discrete_sequence=px.colors.qualitative.Set1,
-                template=plotly_template
+                template=plotly_template, height=400
+            )
+            fig_box.update_layout(
+                title_font_size=20, title_font_color="#ff4500",
+                xaxis_title="Soil Type", yaxis_title=selected_features[0] if selected_features else 'Soil_pH',
+                boxmode='group', showlegend=True
             )
             st.plotly_chart(fig_box, use_container_width=True)
+            
+            # Correlation Heatmap
+            st.markdown("### 🔥 Correlation Heatmap")
             corr = filtered_df[selected_features].corr() if selected_features else filtered_df.select_dtypes(include=np.number).corr()
             fig_corr = px.imshow(
-                corr, text_auto=True, aspect="auto", title="Correlation Heatmap",
-                color_continuous_scale='RdYlBu', template=plotly_template
+                corr, text_auto='.2f', aspect="auto",
+                title="Correlation Heatmap",
+                color_continuous_scale='RdYlBu', template=plotly_template,
+                height=500
+            )
+            fig_corr.update_layout(
+                title_font_size=20, title_font_color="#ff4500",
+                xaxis_title="Features", yaxis_title="Features"
             )
             st.plotly_chart(fig_corr, use_container_width=True)
+            
+            # Kaleido Export
             try:
                 import kaleido
-                import sys
                 st.write(f"Kaleido detected (version: {kaleido.__version__}, Python: {sys.executable})")
-                buf = BytesIO()
-                fig_corr.write_image(buf, format="png", engine="kaleido")
-                st.download_button(
-                    label="Download Correlation Heatmap (PNG) 📥",
-                    data=buf.getvalue(),
-                    file_name="correlation_heatmap.png",
-                    mime="image/png",
-                    help="Download the correlation heatmap as a PNG image."
-                )
-                # Fallback SVG export
-                buf_svg = BytesIO()
-                fig_corr.write_image(buf_svg, format="svg", engine="kaleido")
-                st.download_button(
-                    label="Download Correlation Heatmap (SVG) 📥",
-                    data=buf_svg.getvalue(),
-                    file_name="correlation_heatmap.svg",
-                    mime="image/svg+xml",
-                    help="Download the correlation heatmap as an SVG image (fallback)."
-                )
+                for format_type, mime_type, ext in [("PNG", "image/png", "png"), ("SVG", "image/svg+xml", "svg")]:
+                    buf = BytesIO()
+                    fig_corr.write_image(buf, format=ext, engine="kaleido", scale=2)
+                    st.download_button(
+                        label=f"Download Heatmap ({format_type}) 📥",
+                        data=buf.getvalue(),
+                        file_name=f"correlation_heatmap.{ext}",
+                        mime=mime_type,
+                        help=f"Download the correlation heatmap as {format_type}."
+                    )
             except ImportError:
-                st.error("Cannot export heatmap: kaleido package is missing. Install it to enable image export.")
+                st.error("Cannot export heatmap: kaleido package is missing. Install: `pip install -U kaleido`")
                 st.code("pip install -U kaleido")
-                st.write("Troubleshooting steps:")
                 st.markdown("""
-                1. Verify Python version (should be 3.11):
-                   ```bash
-                   python --version
-                   ```
-                2. Activate your virtual environment (if used):
-                   ```bash
-                   .\venv\Scripts\activate
-                   ```
-                3. Install kaleido:
-                   ```bash
-                   pip install -U kaleido
-                   ```
-                4. Verify installation:
-                   ```bash
-                   pip show kaleido
-                   ```
-                5. If issues persist, try user-level installation:
-                   ```bash
-                   python3.11 -m pip install -U kaleido --user
-                   ```
-                6. Test kaleido with this script:
-                   ```python
-                   import plotly.express as px
-                   from io import BytesIO
-                   try:
-                       import kaleido
-                       print("Kaleido installed successfully!")
-                       fig = px.imshow([[1, 2], [3, 4]])
-                       buf = BytesIO()
-                       fig.write_image(buf, format="png")
-                       print("Image export successful!")
-                   except Exception as e:
-                       print(f"Error: {e}")
-                   ```
-                7. If still failing, share the output of `pip show kaleido` and the test script.
+                **Troubleshooting**:
+                1. Check Python version:
+                ```bash
+                python -c 'import sys; print(sys.version)'
+                ```
+                2. Verify kaleido:
+                ```bash
+                python -c 'import kaleido; print(kaleido.__version__)'
+                ```
+                3. Run test script:
+                ```python
+                import plotly.express as px
+                from io import BytesIO
+                fig = px.imshow([[1, 2], [3, 4]], title="Test Heatmap")
+                buf = BytesIO()
+                fig.write_image(buf, format="png", engine="kaleido")
+                print("PNG export successful!")
+                ```
                 """)
             except Exception as e:
-                st.error(f"Cannot export heatmap: {str(e)}")
-                st.write("Ensure kaleido is installed and compatible with Python 3.11:")
+                st.error(f"Heatmap export failed: {str(e)}")
+                st.markdown("**Troubleshooting**: Ensure kaleido is compatible with Python 3.13.5 or switch to Python 3.12.")
                 st.code("pip install -U kaleido")
-                st.write("Check Python executable:")
-                st.code(f"python -c 'import sys; print(sys.executable)'")
-                st.write("If issues persist, run the test script above and share the output.")
-
+            
+            # Parallel Coordinates Plot
+            st.markdown("### 🌐 Parallel Coordinates Plot")
+            st.markdown("<div class='tooltip'>What's this?<span class='tooltiptext'>Compare multiple soil features at once. Helps identify teff-suitable soils.</span></div>", unsafe_allow_html=True)
+            if len(selected_features) >= 3:
+                fig_parallel = px.parallel_coordinates(
+                    filtered_df,
+                    dimensions=selected_features,
+                    color='Soil_pH' if 'Soil_pH' in filtered_df.columns else None,
+                    title="Parallel Coordinates: Soil Features",
+                    color_continuous_scale=px.colors.sequential.Viridis,
+                    template=plotly_template,
+                    height=500
+                )
+                fig_parallel.update_layout(
+                    title_font_size=20, title_font_color="#ff4500",
+                    showlegend=True
+                )
+                st.plotly_chart(fig_parallel, use_container_width=True)
+            else:
+                st.info("Select at least 3 features in the sidebar for parallel coordinates.")
+            
+            # Soil Health Score Distribution
+            st.markdown("### 🌱 Soil Health Score Distribution")
+            st.markdown("<div class='tooltip'>What's this?<span class='tooltiptext'>Soil health score based on pH, organic carbon, and clay. Higher scores are better for teff.</span></div>", unsafe_allow_html=True)
+            try:
+                health_df = filtered_df.copy()
+                organic_scaled = MinMaxScaler().fit_transform(health_df[['Organic_Carbon']]).ravel() * 40
+                ph_scaled = (1 - abs(health_df['Soil_pH'] - 6.5) / 2.5).to_numpy() * 30
+                clay_scaled = MinMaxScaler().fit_transform(health_df[['Clay_Content']]).ravel() * 30
+                health_df['Soil_Health_Score'] = (organic_scaled + ph_scaled + clay_scaled) * 100
+                fig_health = px.histogram(
+                    health_df, x='Soil_Health_Score',
+                    color='Soil_Type' if 'Soil_Type' in filtered_df.columns else None,
+                    title="Soil Health Score Distribution",
+                    color_discrete_sequence=px.colors.qualitative.Pastel1,
+                    template=plotly_template, height=400,
+                    nbins=30, text_auto=True
+                )
+                fig_health.update_layout(
+                    title_font_size=20, title_font_color="#ff4500",
+                    xaxis_title="Soil Health Score", yaxis_title="Count",
+                    showlegend=True
+                )
+                st.plotly_chart(fig_health, use_container_width=True)
+            except ValueError as e:
+                st.warning(f"Cannot compute Soil Health Score: {str(e)}. Adjust filters.")
+            
+            # Teff Suitability Heatmap
+            st.markdown("### 🌾 Teff Suitability Heatmap")
+            st.markdown("<div class='tooltip'>What's this?<span class='tooltiptext'>Shows teff suitability based on pH and organic carbon. Higher scores are better.</span></div>", unsafe_allow_html=True)
+            try:
+                teff_df = filtered_df.copy()
+                teff_df['Teff_Suitability'] = (1 - abs(teff_df['Soil_pH'] - 6.5) / 2.5) * 0.6 + \
+                                              MinMaxScaler().fit_transform(teff_df[['Organic_Carbon']]).ravel() * 0.4
+                if 'Soil_Type' in teff_df.columns:
+                    teff_df['Teff_Suitability'] = teff_df.apply(
+                        lambda row: row['Teff_Suitability'] * (1.0 if row['Soil_Type'] == 'Loamy' else 0.8 if row['Soil_Type'] == 'Sandy' else 0.6), axis=1
+                    )
+                fig_teff = px.density_heatmap(
+                    teff_df, x='Soil_pH', y='Organic_Carbon', z='Teff_Suitability',
+                    title="Teff Suitability Heatmap",
+                    color_continuous_scale='YlOrRd', template=plotly_template,
+                    height=500, nbinsx=20, nbinsy=20
+                )
+                fig_teff.update_layout(
+                    title_font_size=20, title_font_color="#ff4500",
+                    xaxis_title="Soil pH", yaxis_title="Organic Carbon (%)",
+                    coloraxis_colorbar_title="Teff Suitability"
+                )
+                st.plotly_chart(fig_teff, use_container_width=True)
+            except ValueError as e:
+                st.warning(f"Cannot create Teff Suitability Heatmap: {str(e)}. Adjust filters.")
     with tab3:
         st.subheader("🎨 Advanced EDA Visualizations")
         st.markdown("<div class='tooltip'>What is this?<span class='tooltiptext'>16 vibrant charts to explore soil data deeply!</span></div>", unsafe_allow_html=True)
